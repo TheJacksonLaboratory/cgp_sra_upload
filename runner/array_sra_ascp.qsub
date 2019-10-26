@@ -1,0 +1,68 @@
+#!/bin/bash
+#PBS -N sra_ascp_canine_n50.log                                # name of the job
+#PBS -t 1-10%2		# Spawn 10 jobs, run max 2 at a time
+#PBS -d /fastscratch/foo/cgp/sra_ascp
+#PBS -o /fastscratch/foo/cgp/sra_ascp/sra_ascp_canine_n50.log
+#PBS -e /fastscratch/foo/cgp/sra_ascp/sra_ascp_canine_n50.log
+#PBS -q batch                                  # Job queue
+#PBS -l walltime=24:00:00                      # Walltime in minutes
+#PBS -l mem=8gb                             # Memory requirements in Kbytes
+#PBS -l nodes=1:ppn=1                 # CPU reserved
+#PBS -M foo@jax.org                           # for notifications
+#PBS -m a                              # send email when job ends 
+#PBS -r y                                         # make the jobs re-runnable
+#PBS -S /bin/bash                                 # use bash shell
+#PBS -V                                           # pass user env
+#PBS -j oe
+#PBS                                 # Any extra arguments passed onto queue
+
+## --- DO NOT EDIT from below here---- ##
+## following will always overwrite previous output file, if any.
+set +o noclobber
+
+## sleep for n seconds before running any command
+FORCEWAIT=$(shuf -i 2-10 -n 1)
+echo -e "\nWaiting for ${FORCEWAIT} seconds before starting workflow\n"
+sleep "${FORCEWAIT}"
+
+echo "BEGIN at $(date)"
+
+## github repo
+CODEDIR="/home/foo/pipelines/cgp_sra_upload"
+## tsv file with files to be uploaded, one per row
+FILELIST="${CODEDIR}/samples/files_to_upload.tsv"
+export FILELIST
+
+if [[ ! -f "$FILELIST" ]]; then
+	echo -e "\nERROR: Missing table containing files to be uploaded at $FILELIST\n"
+	exit 1
+fi
+
+echo "PBS_ARRAYID is $PBS_ARRAYID"
+export PBS_ARRAYID
+
+## Load aspera module
+module load aspera/3.7.7
+
+## extract path to file to be uploaded using PBS_ARRAYID
+if [[ -z "${PBS_ARRAYID}" || ! -f "$FILELIST" ]]; then
+	echo -e "\nERROR: Either PBS array ID is not available as ${PBS_ARRAYID}\nJob must be run in array mode\nOR\nlist of files to be uploaded is not accessible at $FILELIST\n" >&2
+	exit 1
+else
+	echo -e "\nUsing file from: $FILELIST\nExtracting line based on PBS_ARRAYID value: $PBS_ARRAYID\n"
+	## avoid quoting PBS_ARRAYID in sed command
+	FILEPATH=$(sed -n ${PBS_ARRAYID}p "${FILELIST}")
+
+	if [[ ! -z "${FILEPATH}" ]]; then
+		echo -e "\nProcessing PBS_ARRAYID: $PBS_ARRAYID and FILE: $FILEPATH\n"
+	else
+		echo -e "\nERROR: While processing PBS_ARRAYID: $PBS_ARRAYID, found an incorrect parsing of file: $FILELIST\nParsed line from $FILELIST is: $FILEPATH\n" >&2
+		exit 1
+	fi
+fi
+
+#### run sra upload ####
+## add SRA remote path, including subdir under user dir
+"${CODEDIR}"/scripts/sra_ascp -s "subasp@upload.ncbi.nlm.nih.gov:uploads/foo@example.com_xXXYz12X/SUB0000000/" -p "${FILEPATH}"
+
+## END ##

@@ -1,0 +1,104 @@
+#!/bin/bash
+
+## Upload files to NCBI SRA using aspera ascp CLI
+## @sbamin
+
+# usage
+show_help() {
+cat << EOF
+
+Wrapper to transfer data via aspera ascp command line interface to NCBI SRA
+
+Required parameters: 
+    If aspera command line client is not installed, visit https://downloads.asperasoft.com to install aspera cli.
+
+Usage: ${0##*/} -p <Absolute path to file to be uploaded: One at a time> -s subasp@upload.ncbi.nlm.nih.gov:uploads/foo@example.com_xXXYz12X/SUB0000000/
+
+Required arguments:
+	-p Absolute path to file to be uploaded: One at a time
+	-s remote server path, including path to directory under which data will be stored
+
+Optional arguments:
+	-k path to aspera SRA ssh key (default: ~/.ssh/ncbi_ascp.openssh)
+	-l limit upload bandwidth (default: 100m)
+
+EOF
+}
+
+if [[ $# -lt 1 ]];then show_help;exit 1;fi
+
+while getopts "p:k:l:s:h" opt; do
+    case "$opt" in
+        h) show_help;exit 0;;
+        p) FILEPATH=$OPTARG;;
+		k) ASCP_SSH_KEY=$OPTARG;;
+		l) UP_BANDWIDTH=$OPTARG;;
+		s) REMOTEPATH=$OPTARG;;
+       '?') show_help >&2 exit 1 ;;
+    esac
+done
+
+## Defaults ##
+FILEPATH=${FILEPATH:-"NA"}
+ASCP_SSH_KEY=${ASCP_SSH_KEY:-"$HOME/.ssh/ncbi_ascp.openssh"}
+UP_BANDWIDTH=${UP_BANDWIDTH:-"100m"}
+REMOTEPATH=${REMOTEPATH:-"subasp@upload.ncbi.nlm.nih.gov:uploads/foo@example.com_xXXYz12X/SUB0000000/"}
+
+if ! command -v ascp; then
+	echo -e "Missing aspera ascp cli" >&2
+	exit 1
+fi
+
+if [[ ! -f "$ASCP_SSH_KEY" ]]; then
+	echo -e "\nMissing SRA aspera ssh key at ${ASCP_SSH_KEY}\nProvide path to SRA aspera ssh key at -k" >&2
+	exit 1
+fi
+
+## make log dir
+ASCPLOG="${HOME}"/logs/ascp
+mkdir -p "${ASCPLOG}"
+ASCPLOGFILE="${ASCPLOG}"/sra_cgp_ascp.log
+
+if [[ ! -f "${FILEPATH}" ]]; then
+	echo -e "\nWARN: Skipping upload as can not locate file to be uploaded at ${FILEPATH} or -p argument is empty\n" >&2
+	
+	## update log file with SKIP_FNF (file not found) and exit code of 1
+	TSTAMP=$(date +%d%b%y_%H%M%S%Z)
+
+	if command -v slacktee; then
+		printf "SKIP_FNF\t%s\t%s\t1\n" "$FILEPATH" "$TSTAMP" | slacktee -t "SKIP_FNF" -i "warning" | tee -a "${ASCPLOGFILE}"
+	else
+		printf "SKIP_FNF\t%s\t%s\t1\n" "$FILEPATH" "$TSTAMP" | tee -a "${ASCPLOGFILE}"
+	fi
+
+	## let slack ping before exiting
+	sleep 2
+else
+	## update log file
+	TSTAMP=$(date +%d%b%y_%H%M%S%Z)
+	printf "ACTIVE\t%s\t%s\tNA\n" "$FILEPATH" "$TSTAMP" | tee -a "${ASCPLOGFILE}"
+	sleep 2
+
+	## Add -q to run in quiet mode
+	ascp -i "$ASCP_SSH_KEY" -QT -l"${UP_BANDWIDTH}" -k1 -d "${FILEPATH}" "${REMOTEPATH}"
+	exitstat=$?
+
+	## update log file
+	if [[ "$exitstat" == 0 ]]; then
+		TSTAMP=$(date +%d%b%y_%H%M%S%Z)
+		printf "OK\t%s\t%s\t%s\n" "$FILEPATH" "$TSTAMP" "$exitstat" | tee -a "${ASCPLOGFILE}"
+		sleep 2
+	else
+		TSTAMP=$(date +%d%b%y_%H%M%S%Z)
+
+		if command -v slacktee; then
+			printf "ERROR\t%s\t%s\t%s\n" "$FILEPATH" "$TSTAMP" "$exitstat" | slacktee -t "ERROR" -i "stop" | tee -a "${ASCPLOGFILE}"
+		else
+			printf "ERROR\t%s\t%s\t%s\n" "$FILEPATH" "$TSTAMP" "$exitstat" | tee -a "${ASCPLOGFILE}"
+		fi
+
+		sleep 2
+	fi
+fi
+
+## END ##
